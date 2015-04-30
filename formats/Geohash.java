@@ -44,6 +44,9 @@ package formats;
  * {@pre
  *   long            gh = Geohash.encode(lat, lng, bits);
  *   Geohash.Decoded d  = Geohash.decode(gh, bits);
+ *
+ *   // additional methods for binary geohashes:
+ *   long ghEastBy1 = Geohash.shift(gh, bits, 1, 0);
  * }
  *
  * The following conversions are available:
@@ -208,6 +211,22 @@ public class Geohash {
     final double lngError = error * ((bits & 1) != 0 ? 90 : 180);
     return new Decoded(gh, bits,
                        lat + latError, lng + lngError, latError, lngError);
+  }
+
+  /**
+   * Returns the geohash shifted by the specified x, y coordinates. Coordinates
+   * are specified in terms of geohash cells, so a shift of (1, 0) results in
+   * the geohash immediately east of the one given.
+   */
+  public static long shift(final long gh,
+                           final long bits,
+                           final long dx,
+                           final long dy) {
+    final boolean swap = (bits & 1) == 0;
+    final long    sx   = swap ? dy : dx;
+    final long    sy   = swap ? dx : dy;
+    return (widen(unwiden(gh >> 1) + sy) << 1 | widen(unwiden(gh) + sx))
+         & ~(-1l << bits);
   }
 
   /**
