@@ -230,6 +230,31 @@ public class Geohash {
   }
 
   /**
+   * Takes two geohashes of the same precision and returns the minimal
+   * precision reduction required to contain both. You can use this to
+   * calculate the highest-precision single geohash that contains any two
+   * points (or a bounding box):
+   *
+   * {@pre
+   *   long gh1 = Geohash.encode(lat1, lng1, 60);
+   *   long gh2 = Geohash.encode(lat2, lng2, 60);
+   *   int bits = Geohash.unionPrecisionReduction(gh1, gh2);
+   *
+   *   // "bits" is the smallest number that makes union1 == union2:
+   *   long union1 = Geohash.encode(lat1, lng1, 60 - bits);
+   *   long union2 = Geohash.encode(lat2, lng2, 60 - bits);
+   * }
+   */
+  public static int unionPrecisionReduction(final long gh1, final long gh2) {
+    final long d = gh1 ^ gh2;
+    if (d == 0) return 0;
+    int bits = 0;
+    for (int b = 32; b != 0; b >>>= 1)
+      if ((d & ~(-1l << (bits | b))) != d) bits |= b;
+    return bits + 1;
+  }
+
+  /**
    * Takes a base-32 string and returns a long containing its bits.
    */
   public static long fromBase32(final String base32) {
