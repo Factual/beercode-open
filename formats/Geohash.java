@@ -1,3 +1,27 @@
+/*
+MIT license
+
+Copyright (c) 2015 Factual, Inc.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
+of the Software, and to permit persons to whom the Software is furnished to do
+so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+*/
+
 package formats;
 
 /**
@@ -43,21 +67,35 @@ package formats;
  *
  * {@pre
  *   long            gh = Geohash.encode(lat, lng, bits);
- *   Geohash.Decoded d  = Geohash.decode(gh, bits);
+ *   Geohash.Decoded d  = Geohash.decode(gh);
  *
  *   // additional methods for binary geohashes:
- *   long ghEastBy1 = Geohash.shift(gh, bits, 1, 0);
+ *   long ghEastBy1 = Geohash.shift(gh, 1, 0);
+ *   long ghEastBy1 = Geohash.east(gh);
+ *
+ *   // if you import static Geohash.*:
+ *   long ghNE = north(east(gh));
  * }
  *
  * The following conversions are available:
  *
  * {@pre
- *   String Geohash.toBase32(long gh, int bits)
+ *   String Geohash.toBase32(long gh)
  *   long Geohash.fromBase32(String gh)
  * }
  *
  * Any operation involving base-32 requires that you use a multiple of 5 bits
  * for the results to be meaningful.
+ *
+ * NB: This code now tags geohashes with a precision marker so you don't have
+ * to know the precision of a geohash to manipulate it. Although the API is
+ * fully backwards-compatible, if you decode a new tagged geohash with an older
+ * version of this library you will get results that are out of the specified
+ * ranges and technically incorrect (in practice, they'll contain large angles
+ * that ultimately evaluate to the same physical location but are nonetheless
+ * out of spec). To work around this, you need to use {@code Geohash.untag()}
+ * to remove the precision tag; alternatively, you can upgrade to this version
+ * of the library, which handles tagged values correctly.
  *
  * @author spencer
  */
@@ -139,6 +177,47 @@ public class Geohash {
   }
 
   /**
+   * Takes a long-encoded geohash and returns its precision in bits. This is
+   * defined only for tagged geohashes; if you pass in an untagged geohash,
+   * this function will throw an {@link InvalidArgumentException}.
+   */
+  public static int precision(long g) {
+    if ((g & 0x4000000000000000l) == 0)
+      throw new IllegalArgumentException(
+        "Geohash.java: can't calculate precision of an untagged geohash "
+        + Long.toHexString(g));
+
+    g &= 0x3fffffffffffffffl;
+    int bits = 0;
+    for (int b = 32; b != 0; b >>>= 1)
+      if ((g & ~(-1l << (bits | b))) != g) bits |= b;
+    return bits;
+  }
+
+  /**
+   * Returns true if a geohash is tagged with precision information.
+   */
+  public static boolean isTagged(final long gh)
+    { return (gh & 0x4000000000000000l) != 0; }
+
+  /**
+   * Removes the tag from a precision-tagged geohash. If the geohash is already
+   * untagged, does nothing.
+   */
+  public static long untag(final long gh)
+    { return isTagged(gh) ? gh & ~precisionTag(precision(gh)) : gh; }
+
+  /**
+   * Returns a long that can be ORed with a geohash to store its precision. The
+   * tag strategy is simple: we set the most-significant positive bit
+   * (important; otherwise older versions of the library might not decode
+   * properly, since they assume the geohash is positive) to indicate that the
+   * geohash is in fact tagged, then we set {@code 1 << precision}.
+   */
+  public static long precisionTag(final int bits)
+    { return 0x4000000000000000l | 1l << bits; }
+
+  /**
    * Takes a lat/lng and a precision, and returns a 64-bit long containing that
    * many low-order bits (big-endian). You can convert this long to a base-32
    * string using {@link #toBase32}.
@@ -158,7 +237,7 @@ public class Geohash {
                             & 0x7fffffffl);
     final long lngs = widen((long) ((lng + 180) * 0x80000000l / 360.0)
                             & 0x7fffffffl);
-    return (lats >> 1 | lngs) >> 61 - bits;
+    return (lats >> 1 | lngs) >> 61 - bits | precisionTag(bits);
   }
 
   /**
@@ -175,6 +254,9 @@ public class Geohash {
     }
     return new String(chars);
   }
+
+  public static String toBase32(final long taggedGH)
+    { return toBase32(taggedGH, precision(taggedGH)); }
 
   /**
    * Takes a latitude, longitude, and precision, and returns a base-32 string
@@ -193,8 +275,10 @@ public class Geohash {
    */
   public static Decoded decode(final long gh, final int bits) {
     final long shifted = gh << 61 - bits;
-    final double lat = (double) unwiden(shifted >> 1) / 0x40000000l * 180 - 90;
-    final double lng = (double) unwiden(shifted)      / 0x80000000l * 360 - 180;
+    final double lat = (double) (unwiden(shifted >> 1) & 0x3fffffffl)
+                       / 0x40000000l * 180 - 90;
+    final double lng = (double) (unwiden(shifted)      & 0x7fffffffl)
+                       / 0x80000000l * 360 - 180;
 
     // Repeated squaring to get the error. This is much faster than iteration.
     double error = 1.0;
@@ -213,21 +297,46 @@ public class Geohash {
                        lat + latError, lng + lngError, latError, lngError);
   }
 
+  public static Decoded decode(final long taggedGH)
+    { return decode(taggedGH, precision(taggedGH)); }
+
   /**
    * Returns the geohash shifted by the specified x, y coordinates. Coordinates
    * are specified in terms of geohash cells, so a shift of (1, 0) results in
    * the geohash immediately east of the one given.
    */
   public static long shift(final long gh,
-                           final long bits,
+                           final int  bits,
                            final long dx,
                            final long dy) {
     final boolean swap = (bits & 1) == 0;
     final long    sx   = swap ? dy : dx;
     final long    sy   = swap ? dx : dy;
     return (widen(unwiden(gh >> 1) + sy) << 1 | widen(unwiden(gh) + sx))
-         & ~(-1l << bits);
+         & ~(-1l << bits)
+         | precisionTag(bits);
   }
+
+  public static long shift(final long taggedGH, final long dx, final long dy)
+    { return shift(taggedGH, precision(taggedGH), dx, dy); }
+
+  public static long north(final long gh, final int bits)
+    { return shift(gh, bits, 0, 1); }
+  public static long east (final long gh, final int bits)
+    { return shift(gh, bits, 1, 0); }
+  public static long south(final long gh, final int bits)
+    { return shift(gh, bits, 0, -1); }
+  public static long west (final long gh, final int bits)
+    { return shift(gh, bits, -1, 0); }
+
+  public static long north(final long taggedGH)
+    { return north(taggedGH, precision(taggedGH)); }
+  public static long east (final long taggedGH)
+    { return east(taggedGH, precision(taggedGH)); }
+  public static long south(final long taggedGH)
+    { return south(taggedGH, precision(taggedGH)); }
+  public static long west (final long taggedGH)
+    { return west(taggedGH, precision(taggedGH)); }
 
   /**
    * Takes two geohashes of the same precision and returns the minimal
@@ -244,6 +353,9 @@ public class Geohash {
    *   long union1 = Geohash.encode(lat1, lng1, 60 - bits);
    *   long union2 = Geohash.encode(lat2, lng2, 60 - bits);
    * }
+   *
+   * NOTE: this function works only if both or neither input geohash is tagged.
+   * It will return incorrect results if one is tagged and the other is not.
    */
   public static int unionPrecisionReduction(final long gh1, final long gh2) {
     final long d = gh1 ^ gh2;
@@ -263,7 +375,7 @@ public class Geohash {
       result <<= 5;
       result |= (long) BASE32_INV[(int) base32.charAt(i)];
     }
-    return result;
+    return result | precisionTag(base32.length() * 5);
   }
 
   /**
